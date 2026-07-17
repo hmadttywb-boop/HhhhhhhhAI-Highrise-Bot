@@ -1,0 +1,2 @@
+highrise-bot-sdk>=24.1.0
+openai>=1.0.0

@@ -2,10 +2,10 @@ import asyncio
 import os
 import random
 import openai
-from highrise import BaseBot, __main__
-from highrise.models import User
+from highrise import BaseBot
+from highrise.__main__ import BotDefinition, main as hr_main
+from highrise.models import User, Position
 
-# إعداد مفتاح OpenAI (النسخة القديمة 0.28.x)
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 BOT_NAME = os.environ.get("BOT_NAME", "سمايل")
@@ -28,21 +28,98 @@ ENTRY_MSGS = [
     "يا {name} وين كنت؟ ما حد فاقدك 😂",
 ]
 
+FOLLOW_MSGS = [
+    "جاي يا {name} 😈",
+    "تعال تعال، مافي مكان تهرب منه 😂",
+    "اتبعك؟ حسناً، بس مو عشان تبيني 😒",
+]
+
+STAY_MSGS = [
+    "تمام، خليت مكاني 😒 ارتحت منك",
+    "وقفت، ما يستاهل 🙄",
+    "حسناً حسناً، بوقف 😤",
+]
+
+ERROR_MSGS = [
+    "ما فهمت وش تبي، كلامك فاضي 😒",
+    "إيش هذا الكلام اللي ما يفهم؟ 🙄",
+    "حدّث نفسك بس 😂",
+]
+
 
 class SmaileBot(BaseBot):
     def __init__(self):
         self.history: dict[str, list] = {}
+        self.follow_target: str | None = None
+        self.follow_task: asyncio.Task | None = None
+        self.user_positions: dict[str, Position] = {}
+        self.my_username: str | None = None
 
     async def on_start(self, session_metadata) -> None:
-        print(f"✅ البوت [{BOT_NAME}] دخل الروم!")
+        # حفظ اسم البوت عشان ما يرد على نفسه
+        try:
+            self.my_username = session_metadata.user.username
+        except Exception:
+            self.my_username = None
+        print(f"✅ البوت [{BOT_NAME}] دخل الروم! (اسم الحساب: {self.my_username})")
         try:
             await self.highrise.chat("أنا وصلت 😈 خافوا")
         except Exception as e:
             print(f"خطأ رسالة البداية: {e}")
 
     async def on_chat(self, user: User, message: str) -> None:
+        # تجاهل رسائل البوت نفسه
+        if self.my_username and user.username == self.my_username:
+            return
+
         print(f"[{user.username}]: {message}")
 
+        msg = message.strip()
+
+        # ── أوامر الحركة (تشتغل لو فيها اسم البوت) ──────────────────
+        if BOT_NAME in msg:
+            # أمر اتبعني
+            if "اتبعني" in msg:
+                await self._start_following(user)
+                return
+            # أمر وقوف
+            if any(w in msg for w in ["خليك مكانك", "وقف", "استنى"]):
+                await self._stop_following()
+                return
+
+        # ── رد بالذكاء الاصطناعي فقط لو ذكر اسم البوت ─────────────
+        if BOT_NAME not in msg:
+            return
+
+        await self._ai_reply(user, msg)
+
+    async def on_user_move(self, user: User, position) -> None:
+        # نحفظ آخر موقع لكل مستخدم عشان نقدر نتبعه
+        try:
+            self.user_positions[user.id] = position
+        except Exception:
+            pass
+
+    async def on_user_join(self, user: User, position) -> None:
+        print(f"➡️  {user.username} دخل الروم")
+        if self.my_username and user.username == self.my_username:
+            return
+        msg = random.choice(ENTRY_MSGS).format(name=user.username)
+        try:
+            await self.highrise.chat(msg)
+        except Exception as e:
+            print(f"خطأ رسالة دخول: {e}")
+
+    async def on_user_leave(self, user: User) -> None:
+        print(f"⬅️  {user.username} طلع")
+        self.history.pop(user.id, None)
+        self.user_positions.pop(user.id, None)
+        if self.follow_target == user.id:
+            await self._stop_following(silent=True)
+
+    # ── دوال مساعدة ────────────────────────────────────────────────────
+
+    async def _ai_reply(self, user: User, message: str) -> None:
         uid = user.id
         if uid not in self.history:
             self.history[uid] = []
@@ -51,8 +128,6 @@ class SmaileBot(BaseBot):
             "role": "user",
             "content": f"{user.username} قال: {message}"
         })
-
-        # نحتفظ بآخر 8 رسائل فقط لكل مستخدم
         if len(self.history[uid]) > 8:
             self.history[uid] = self.history[uid][-8:]
 
@@ -70,24 +145,49 @@ class SmaileBot(BaseBot):
             print(f"[{BOT_NAME}]: {reply}")
         except Exception as e:
             print(f"❌ خطأ OpenAI: {e}")
+            fallback = random.choice(ERROR_MSGS)
+            try:
+                await self.highrise.chat(fallback)
+            except Exception:
+                pass
 
-    async def on_user_join(self, user: User, position) -> None:
-        print(f"➡️  {user.username} دخل الروم")
-        msg = random.choice(ENTRY_MSGS).format(name=user.username)
+    async def _start_following(self, user: User) -> None:
+        self.follow_target = user.id
+        if self.follow_task and not self.follow_task.done():
+            self.follow_task.cancel()
+        self.follow_task = asyncio.create_task(self._follow_loop())
+        msg = random.choice(FOLLOW_MSGS).format(name=user.username)
         try:
             await self.highrise.chat(msg)
         except Exception as e:
-            print(f"خطأ رسالة دخول: {e}")
+            print(f"خطأ أمر اتبع: {e}")
 
-    async def on_user_leave(self, user: User) -> None:
-        print(f"⬅️  {user.username} طلع")
-        self.history.pop(user.id, None)
+    async def _stop_following(self, silent: bool = False) -> None:
+        self.follow_target = None
+        if self.follow_task and not self.follow_task.done():
+            self.follow_task.cancel()
+        self.follow_task = None
+        if not silent:
+            msg = random.choice(STAY_MSGS)
+            try:
+                await self.highrise.chat(msg)
+            except Exception as e:
+                print(f"خطأ أمر وقوف: {e}")
+
+    async def _follow_loop(self) -> None:
+        """يتبع المستخدم كل ثانيتين"""
+        while self.follow_target:
+            pos = self.user_positions.get(self.follow_target)
+            if pos:
+                try:
+                    # نمشي لنفس موقع المستخدم
+                    await self.highrise.walk_to(Position(pos.x, pos.y, pos.z))
+                except Exception as e:
+                    print(f"خطأ حركة: {e}")
+            await asyncio.sleep(2)
 
 
 if __name__ == "__main__":
-    import asyncio
-    from highrise.__main__ import BotDefinition, main as hr_main
-
     token = os.environ.get("HIGHRISE_BOT_TOKEN")
     room_id = os.environ.get("HIGHRISE_ROOM_ID")
 

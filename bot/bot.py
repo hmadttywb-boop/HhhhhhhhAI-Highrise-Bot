@@ -53,15 +53,15 @@ class SmaileBot(BaseBot):
         self.follow_target: str | None = None
         self.follow_task: asyncio.Task | None = None
         self.user_positions: dict[str, Position] = {}
-        self.my_username: str | None = None
+        self.my_id: str | None = None
 
     async def on_start(self, session_metadata) -> None:
-        # حفظ اسم البوت عشان ما يرد على نفسه
+        # حفظ ID البوت عشان ما يرد على نفسه
         try:
-            self.my_username = session_metadata.user.username
+            self.my_id = session_metadata.user_id
         except Exception:
-            self.my_username = None
-        print(f"✅ البوت [{BOT_NAME}] دخل الروم! (اسم الحساب: {self.my_username})")
+            self.my_id = None
+        print(f"✅ البوت [{BOT_NAME}] دخل الروم! (ID: {self.my_id})")
         try:
             await self.highrise.chat("أنا وصلت 😈 خافوا")
         except Exception as e:
@@ -69,7 +69,7 @@ class SmaileBot(BaseBot):
 
     async def on_chat(self, user: User, message: str) -> None:
         # تجاهل رسائل البوت نفسه
-        if self.my_username and user.username == self.my_username:
+        if self.my_id and user.id == self.my_id:
             return
 
         print(f"[{user.username}]: {message}")

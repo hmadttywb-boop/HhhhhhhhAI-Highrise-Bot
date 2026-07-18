@@ -8,7 +8,7 @@ from highrise.models import User, Position
 
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 gemini_model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
+    model_name="gemini-pro",
     generation_config={"max_output_tokens": 120, "temperature": 0.9},
 )
 

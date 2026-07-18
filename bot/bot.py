@@ -6,12 +6,8 @@ from highrise import BaseBot
 from highrise.__main__ import BotDefinition, main as hr_main
 from highrise.models import User, Position
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-# gemini-2.0-flash-lite: أخف وأسرع وحده أعلى في الفري تير
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash-lite:generateContent?key=" + GEMINI_API_KEY
-)
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 BOT_NAME = os.environ.get("BOT_NAME", "سمايل")
 
@@ -46,18 +42,24 @@ STAY_MSGS = [
 ]
 
 
-async def call_gemini(prompt: str, retries: int = 3) -> str:
-    """يستدعي Gemini مع إعادة المحاولة تلقائياً عند الخطأ 429."""
+async def call_ai(messages: list, retries: int = 3) -> str:
+    """يستدعي Groq مع إعادة المحاولة تلقائياً."""
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 120, "temperature": 0.9},
+        "model": "llama-3.1-8b-instant",
+        "messages": messages,
+        "max_tokens": 120,
+        "temperature": 0.9,
+    }
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
     }
     for attempt in range(retries):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(GEMINI_URL, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                async with session.post(GROQ_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status == 429:
-                        wait = 4 * (attempt + 1)
+                        wait = 3 * (attempt + 1)
                         print(f"⚠️ حد الطلبات، انتظر {wait}ث...")
                         await asyncio.sleep(wait)
                         continue
@@ -65,7 +67,7 @@ async def call_gemini(prompt: str, retries: int = 3) -> str:
                         text = await resp.text()
                         raise Exception(f"HTTP {resp.status}: {text[:300]}")
                     data = await resp.json()
-                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
             if attempt == retries - 1:
                 raise
@@ -146,10 +148,15 @@ class SmaileBot(BaseBot):
         if len(self.history[uid]) > 8:
             self.history[uid] = self.history[uid][-8:]
 
-        prompt = f"{SYSTEM_PROMPT}\n\nالمحادثة:\n" + "\n".join(self.history[uid]) + f"\n\n{BOT_NAME}:"
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for line in self.history[uid]:
+            if line.startswith(f"{BOT_NAME}:"):
+                messages.append({"role": "assistant", "content": line[len(BOT_NAME)+1:].strip()})
+            else:
+                messages.append({"role": "user", "content": line})
 
         try:
-            reply = await call_gemini(prompt)
+            reply = await call_ai(messages)
             self.history[uid].append(f"{BOT_NAME}: {reply}")
             await self.highrise.chat(reply)
             print(f"[{BOT_NAME}]: {reply}")

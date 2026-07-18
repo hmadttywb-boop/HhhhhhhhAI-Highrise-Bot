@@ -7,9 +7,10 @@ from highrise.__main__ import BotDefinition, main as hr_main
 from highrise.models import User, Position
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# gemini-2.0-flash-lite: أخف وأسرع وحده أعلى في الفري تير
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent?key=" + GEMINI_API_KEY
+    "gemini-2.0-flash-lite:generateContent?key=" + GEMINI_API_KEY
 )
 
 BOT_NAME = os.environ.get("BOT_NAME", "سمايل")
@@ -44,11 +45,33 @@ STAY_MSGS = [
     "حسناً حسناً، بوقف 😤",
 ]
 
-ERROR_MSGS = [
-    "ما فهمت وش تبي، كلامك فاضي 😒",
-    "إيش هذا الكلام اللي ما يفهم؟ 🙄",
-    "حدّث نفسك بس 😂",
-]
+
+async def call_gemini(prompt: str, retries: int = 3) -> str:
+    """يستدعي Gemini مع إعادة المحاولة تلقائياً عند الخطأ 429."""
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 120, "temperature": 0.9},
+    }
+    for attempt in range(retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(GEMINI_URL, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 429:
+                        wait = 4 * (attempt + 1)
+                        print(f"⚠️ حد الطلبات، انتظر {wait}ث...")
+                        await asyncio.sleep(wait)
+                        continue
+                    if resp.status != 200:
+                        text = await resp.text()
+                        raise Exception(f"HTTP {resp.status}: {text[:300]}")
+                    data = await resp.json()
+                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            print(f"محاولة {attempt+1} فشلت: {e}")
+            await asyncio.sleep(2)
+    raise Exception("فشلت كل المحاولات")
 
 
 class SmaileBot(BaseBot):
@@ -56,11 +79,10 @@ class SmaileBot(BaseBot):
         self.history: dict[str, list] = {}
         self.follow_target: str | None = None
         self.follow_task: asyncio.Task | None = None
-        self.user_positions: dict[str, Position] = {}
+        self.user_positions: dict[str, object] = {}
         self.my_id: str | None = None
 
     async def on_start(self, session_metadata) -> None:
-        # حفظ ID البوت عشان ما يرد على نفسه
         try:
             self.my_id = session_metadata.user_id
         except Exception:
@@ -72,33 +94,28 @@ class SmaileBot(BaseBot):
             print(f"خطأ رسالة البداية: {e}")
 
     async def on_chat(self, user: User, message: str) -> None:
-        # تجاهل رسائل البوت نفسه
         if self.my_id and user.id == self.my_id:
             return
 
         print(f"[{user.username}]: {message}")
-
         msg = message.strip()
 
-        # ── أوامر الحركة (تشتغل لو فيها اسم البوت) ──────────────────
+        # أوامر الحركة
         if BOT_NAME in msg:
-            # أمر اتبعني
             if "اتبعني" in msg:
                 await self._start_following(user)
                 return
-            # أمر وقوف
             if any(w in msg for w in ["خليك مكانك", "وقف", "استنى"]):
                 await self._stop_following()
                 return
 
-        # ── رد بالذكاء الاصطناعي فقط لو ذكر اسم البوت ─────────────
+        # رد بالذكاء الاصطناعي فقط لو ذُكر الاسم
         if BOT_NAME not in msg:
             return
 
         await self._ai_reply(user, msg)
 
     async def on_user_move(self, user: User, position) -> None:
-        # نحفظ آخر موقع لكل مستخدم عشان نقدر نتبعه
         try:
             self.user_positions[user.id] = position
         except Exception:
@@ -108,9 +125,8 @@ class SmaileBot(BaseBot):
         print(f"➡️  {user.username} دخل الروم")
         if self.my_id and user.id == self.my_id:
             return
-        msg = random.choice(ENTRY_MSGS).format(name=user.username)
         try:
-            await self.highrise.chat(msg)
+            await self.highrise.chat(random.choice(ENTRY_MSGS).format(name=user.username))
         except Exception as e:
             print(f"خطأ رسالة دخول: {e}")
 
@@ -121,8 +137,6 @@ class SmaileBot(BaseBot):
         if self.follow_target == user.id:
             await self._stop_following(silent=True)
 
-    # ── دوال مساعدة ────────────────────────────────────────────────────
-
     async def _ai_reply(self, user: User, message: str) -> None:
         uid = user.id
         if uid not in self.history:
@@ -132,44 +146,23 @@ class SmaileBot(BaseBot):
         if len(self.history[uid]) > 8:
             self.history[uid] = self.history[uid][-8:]
 
+        prompt = f"{SYSTEM_PROMPT}\n\nالمحادثة:\n" + "\n".join(self.history[uid]) + f"\n\n{BOT_NAME}:"
+
         try:
-            context = "\n".join(self.history[uid])
-            prompt = f"{SYSTEM_PROMPT}\n\nالمحادثة:\n{context}\n\n{BOT_NAME}:"
-
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": 120, "temperature": 0.9},
-            }
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(GEMINI_URL, json=payload) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        raise Exception(f"HTTP {resp.status}: {text[:200]}")
-                    data = await resp.json()
-
-            reply = (
-                data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            )
+            reply = await call_gemini(prompt)
             self.history[uid].append(f"{BOT_NAME}: {reply}")
             await self.highrise.chat(reply)
             print(f"[{BOT_NAME}]: {reply}")
         except Exception as e:
-            print(f"❌ خطأ Gemini: {e}")
-            fallback = random.choice(ERROR_MSGS)
-            try:
-                await self.highrise.chat(fallback)
-            except Exception:
-                pass
+            print(f"❌ خطأ نهائي Gemini: {e}")
 
     async def _start_following(self, user: User) -> None:
         self.follow_target = user.id
         if self.follow_task and not self.follow_task.done():
             self.follow_task.cancel()
         self.follow_task = asyncio.create_task(self._follow_loop())
-        msg = random.choice(FOLLOW_MSGS).format(name=user.username)
         try:
-            await self.highrise.chat(msg)
+            await self.highrise.chat(random.choice(FOLLOW_MSGS).format(name=user.username))
         except Exception as e:
             print(f"خطأ أمر اتبع: {e}")
 
@@ -179,19 +172,16 @@ class SmaileBot(BaseBot):
             self.follow_task.cancel()
         self.follow_task = None
         if not silent:
-            msg = random.choice(STAY_MSGS)
             try:
-                await self.highrise.chat(msg)
+                await self.highrise.chat(random.choice(STAY_MSGS))
             except Exception as e:
                 print(f"خطأ أمر وقوف: {e}")
 
     async def _follow_loop(self) -> None:
-        """يتبع المستخدم كل ثانيتين"""
         while self.follow_target:
             pos = self.user_positions.get(self.follow_target)
             if pos:
                 try:
-                    # نمشي لنفس موقع المستخدم
                     await self.highrise.walk_to(Position(pos.x, pos.y, pos.z))
                 except Exception as e:
                     print(f"خطأ حركة: {e}")

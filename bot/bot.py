@@ -106,7 +106,7 @@ class SmaileBot(BaseBot):
 
     async def on_user_join(self, user: User, position) -> None:
         print(f"➡️  {user.username} دخل الروم")
-        if self.my_username and user.username == self.my_username:
+        if self.my_id and user.id == self.my_id:
             return
         msg = random.choice(ENTRY_MSGS).format(name=user.username)
         try:

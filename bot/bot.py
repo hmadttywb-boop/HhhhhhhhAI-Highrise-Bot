@@ -1,12 +1,16 @@
 import asyncio
 import os
 import random
-import openai
+import google.generativeai as genai
 from highrise import BaseBot
 from highrise.__main__ import BotDefinition, main as hr_main
 from highrise.models import User, Position
 
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+gemini_model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    generation_config={"max_output_tokens": 120, "temperature": 0.9},
+)
 
 BOT_NAME = os.environ.get("BOT_NAME", "سمايل")
 
@@ -124,27 +128,26 @@ class SmaileBot(BaseBot):
         if uid not in self.history:
             self.history[uid] = []
 
-        self.history[uid].append({
-            "role": "user",
-            "content": f"{user.username} قال: {message}"
-        })
+        self.history[uid].append(f"{user.username}: {message}")
         if len(self.history[uid]) > 8:
             self.history[uid] = self.history[uid][-8:]
 
         try:
-            resp = await openai.ChatCompletion.acreate(
-                model="gpt-3.5-turbo",
-                max_tokens=120,
-                temperature=0.9,
-                messages=[{"role": "system", "content": SYSTEM_PROMPT}]
-                         + self.history[uid],
+            # نبني سياق المحادثة كنص واحد
+            context = "\n".join(self.history[uid])
+            prompt = f"{SYSTEM_PROMPT}\n\nالمحادثة:\n{context}\n\n{BOT_NAME}:"
+
+            loop = asyncio.get_event_loop()
+            resp = await loop.run_in_executor(
+                None,
+                lambda: gemini_model.generate_content(prompt)
             )
-            reply = resp.choices[0].message.content.strip()
-            self.history[uid].append({"role": "assistant", "content": reply})
+            reply = resp.text.strip()
+            self.history[uid].append(f"{BOT_NAME}: {reply}")
             await self.highrise.chat(reply)
             print(f"[{BOT_NAME}]: {reply}")
         except Exception as e:
-            print(f"❌ خطأ OpenAI: {e}")
+            print(f"❌ خطأ Gemini: {e}")
             fallback = random.choice(ERROR_MSGS)
             try:
                 await self.highrise.chat(fallback)

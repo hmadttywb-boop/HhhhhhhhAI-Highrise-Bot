@@ -1,15 +1,15 @@
 import asyncio
 import os
 import random
-import google.generativeai as genai
+import aiohttp
 from highrise import BaseBot
 from highrise.__main__ import BotDefinition, main as hr_main
 from highrise.models import User, Position
 
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-gemini_model = genai.GenerativeModel(
-    model_name="gemini-pro",
-    generation_config={"max_output_tokens": 120, "temperature": 0.9},
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY
 )
 
 BOT_NAME = os.environ.get("BOT_NAME", "سمايل")
@@ -133,16 +133,24 @@ class SmaileBot(BaseBot):
             self.history[uid] = self.history[uid][-8:]
 
         try:
-            # نبني سياق المحادثة كنص واحد
             context = "\n".join(self.history[uid])
             prompt = f"{SYSTEM_PROMPT}\n\nالمحادثة:\n{context}\n\n{BOT_NAME}:"
 
-            loop = asyncio.get_event_loop()
-            resp = await loop.run_in_executor(
-                None,
-                lambda: gemini_model.generate_content(prompt)
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": 120, "temperature": 0.9},
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(GEMINI_URL, json=payload) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        raise Exception(f"HTTP {resp.status}: {text[:200]}")
+                    data = await resp.json()
+
+            reply = (
+                data["candidates"][0]["content"]["parts"][0]["text"].strip()
             )
-            reply = resp.text.strip()
             self.history[uid].append(f"{BOT_NAME}: {reply}")
             await self.highrise.chat(reply)
             print(f"[{BOT_NAME}]: {reply}")

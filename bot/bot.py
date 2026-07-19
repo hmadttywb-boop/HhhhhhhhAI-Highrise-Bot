@@ -47,6 +47,8 @@ SYSTEM_PROMPT = f"""أنت شخص اسمك {BOT_NAME} في لعبة Highrise.
 - لا تكشف إنك بوت أو ذكاء اصطناعي.
 """
 
+OWNER = "ief_"   # الوحيد اللي يقدر يصدر أوامر
+
 ENTRY_MSGS = [
     "شو تبي يا {name}؟ 😒",
     "آخر شي يجي {name} 🙄",
@@ -60,10 +62,21 @@ FOLLOW_MSGS = [
     "اتبعك؟ حسناً، بس مو عشان تبيني 😒",
 ]
 
+CHASE_MSGS = [
+    "الحين أطاردك يا {name} 😈",
+    "هرب هرب، ما رح ينفع 😂",
+    "راح ألحق فيك 😤",
+]
+
 STAY_MSGS = [
-    "تمام، خليت مكاني 😒 ارتحت منك",
+    "تمام، خليت مكاني 😒",
     "وقفت، ما يستاهل 🙄",
     "حسناً حسناً، بوقف 😤",
+]
+
+COME_MSGS = [
+    "جاي يا {name} 🚶",
+    "طيب، بجي عندك 😒",
 ]
 
 
@@ -106,6 +119,7 @@ class SmaileBot(BaseBot):
         self.history: dict[str, list] = {}
         self.follow_target: str | None = None
         self.follow_task: asyncio.Task | None = None
+        self.chase_mode: bool = False
         self.user_positions: dict[str, object] = {}
         self.my_id: str | None = None
 
@@ -136,21 +150,49 @@ class SmaileBot(BaseBot):
 
         print(f"[{user.username}]: {message}")
         msg = message.strip()
+        is_owner = user.username.lower() == OWNER.lower()
 
-        # أوامر الحركة والمظهر
         if BOT_NAME in msg:
-            if "اتبعني" in msg:
-                await self._start_following(user)
-                return
-            if any(w in msg for w in ["خليك مكانك", "وقف", "استنى"]):
-                await self._stop_following()
-                return
-            # انسخ لبس شخص معين أو الشخص اللي يكلم
-            if "انسخ لبس" in msg or "انسخ لبسي" in msg:
-                await self._copy_outfit(user, msg)
-                return
+            # ── أوامر محصورة بـ ief_ فقط ──────────────────────────────
+            if is_owner:
+                # توقف / اثبت
+                if any(w in msg for w in ["وقف", "اثبت", "توقف", "استنى", "خليك مكانك"]):
+                    await self._stop_following()
+                    return
 
-        # رد بالذكاء الاصطناعي فقط لو ذُكر الاسم
+                # تعال (يجي عند الأونر مرة وحدة)
+                if "تعال" in msg:
+                    await self._come_to(user)
+                    return
+
+                # اتبعني
+                if "اتبعني" in msg:
+                    await self._start_following(user, chase=False)
+                    return
+
+                # اتبع [يوزر]
+                if "اتبع " in msg:
+                    target = await self._find_user_in_msg(msg, "اتبع ")
+                    await self._start_following(target or user, chase=False)
+                    return
+
+                # طاردني
+                if "طاردني" in msg:
+                    await self._start_following(user, chase=True)
+                    return
+
+                # طارد [يوزر]
+                if "طارد " in msg:
+                    target = await self._find_user_in_msg(msg, "طارد ")
+                    await self._start_following(target or user, chase=True)
+                    return
+
+                # انسخ لبسي / انسخ لبس [يوزر]
+                if "انسخ لبس" in msg or "انسخ لبسي" in msg:
+                    await self._copy_outfit(user, msg)
+                    return
+
+        # رد بالذكاء الاصطناعي لأي شخص يذكر الاسم
         if BOT_NAME not in msg:
             return
 
@@ -238,18 +280,50 @@ class SmaileBot(BaseBot):
             print(f"❌ خطأ نسخ اللبس: {e}")
             await self.highrise.chat("صارت مشكلة بنسخ اللبس 😒")
 
-    async def _start_following(self, user: User) -> None:
+    async def _find_user_in_msg(self, msg: str, keyword: str):
+        """يستخرج اسم اليوزر من الرسالة ويبحث عنه في الروم."""
+        parts = msg.split(keyword)
+        name_hint = parts[-1].strip() if len(parts) > 1 else ""
+        # أزل اسم البوت لو كان في النص
+        name_hint = name_hint.replace(BOT_NAME, "").strip()
+        if not name_hint:
+            return None
+        try:
+            room_users, _ = await self.highrise.get_room_users()
+            for u, _ in room_users.content:
+                if name_hint.lower() in u.username.lower():
+                    return u
+        except Exception as e:
+            print(f"خطأ جلب المستخدمين: {e}")
+        return None
+
+    async def _come_to(self, user: User) -> None:
+        """يمشي مرة واحدة عند الأونر."""
+        pos = self.user_positions.get(user.id)
+        if pos:
+            try:
+                await self.highrise.walk_to(Position(pos.x, pos.y, pos.z))
+                await self.highrise.chat(random.choice(COME_MSGS).format(name=user.username))
+            except Exception as e:
+                print(f"خطأ تعال: {e}")
+        else:
+            await self.highrise.chat("ما عرفت وين أنت 🙄")
+
+    async def _start_following(self, user: User, chase: bool = False) -> None:
         self.follow_target = user.id
+        self.chase_mode = chase
         if self.follow_task and not self.follow_task.done():
             self.follow_task.cancel()
         self.follow_task = asyncio.create_task(self._follow_loop())
         try:
-            await self.highrise.chat(random.choice(FOLLOW_MSGS).format(name=user.username))
+            msgs = CHASE_MSGS if chase else FOLLOW_MSGS
+            await self.highrise.chat(random.choice(msgs).format(name=user.username))
         except Exception as e:
             print(f"خطأ أمر اتبع: {e}")
 
     async def _stop_following(self, silent: bool = False) -> None:
         self.follow_target = None
+        self.chase_mode = False
         if self.follow_task and not self.follow_task.done():
             self.follow_task.cancel()
         self.follow_task = None
@@ -260,6 +334,8 @@ class SmaileBot(BaseBot):
                 print(f"خطأ أمر وقوف: {e}")
 
     async def _follow_loop(self) -> None:
+        """اتبع أو طارد — المطاردة أسرع (0.8 ث بدل 2 ث)."""
+        interval = 0.8 if getattr(self, "chase_mode", False) else 2.0
         while self.follow_target:
             pos = self.user_positions.get(self.follow_target)
             if pos:
@@ -267,7 +343,7 @@ class SmaileBot(BaseBot):
                     await self.highrise.walk_to(Position(pos.x, pos.y, pos.z))
                 except Exception as e:
                     print(f"خطأ حركة: {e}")
-            await asyncio.sleep(2)
+            await asyncio.sleep(interval)
 
 
 if __name__ == "__main__":

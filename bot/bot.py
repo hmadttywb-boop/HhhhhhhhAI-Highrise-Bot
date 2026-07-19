@@ -1,10 +1,28 @@
 import asyncio
 import os
 import random
+import json
 import aiohttp
 from highrise import BaseBot
 from highrise.__main__ import BotDefinition, main as hr_main
 from highrise.models import User, Position
+
+POS_FILE = os.path.join(os.path.dirname(__file__), "last_position.json")
+
+def save_position(pos):
+    try:
+        with open(POS_FILE, "w") as f:
+            json.dump({"x": pos.x, "y": pos.y, "z": pos.z}, f)
+    except Exception:
+        pass
+
+def load_position():
+    try:
+        with open(POS_FILE) as f:
+            d = json.load(f)
+            return Position(d["x"], d["y"], d["z"])
+    except Exception:
+        return None
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -97,10 +115,20 @@ class SmaileBot(BaseBot):
         except Exception:
             self.my_id = None
         print(f"✅ البوت [{BOT_NAME}] دخل الروم! (ID: {self.my_id})")
-        try:
-            await self.highrise.chat("أنا وصلت 😈 خافوا")
-        except Exception as e:
-            print(f"خطأ رسالة البداية: {e}")
+        # امشي لآخر موقع محفوظ
+        last_pos = load_position()
+        if last_pos:
+            await asyncio.sleep(1)
+            try:
+                await self.highrise.walk_to(last_pos)
+                print(f"📍 رجع لآخر موقع: ({last_pos.x}, {last_pos.y}, {last_pos.z})")
+            except Exception as e:
+                print(f"خطأ الرجوع للموقع: {e}")
+        else:
+            try:
+                await self.highrise.chat("أنا وصلت 😈 خافوا")
+            except Exception as e:
+                print(f"خطأ رسالة البداية: {e}")
 
     async def on_chat(self, user: User, message: str) -> None:
         if self.my_id and user.id == self.my_id:
@@ -127,6 +155,9 @@ class SmaileBot(BaseBot):
     async def on_user_move(self, user: User, position) -> None:
         try:
             self.user_positions[user.id] = position
+            # احفظ موقع البوت نفسه
+            if self.my_id and user.id == self.my_id:
+                save_position(position)
         except Exception:
             pass
 

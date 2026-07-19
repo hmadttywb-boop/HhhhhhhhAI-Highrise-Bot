@@ -137,13 +137,17 @@ class SmaileBot(BaseBot):
         print(f"[{user.username}]: {message}")
         msg = message.strip()
 
-        # أوامر الحركة
+        # أوامر الحركة والمظهر
         if BOT_NAME in msg:
             if "اتبعني" in msg:
                 await self._start_following(user)
                 return
             if any(w in msg for w in ["خليك مكانك", "وقف", "استنى"]):
                 await self._stop_following()
+                return
+            # انسخ لبس شخص معين أو الشخص اللي يكلم
+            if "انسخ لبس" in msg or "انسخ لبسي" in msg:
+                await self._copy_outfit(user, msg)
                 return
 
         # رد بالذكاء الاصطناعي فقط لو ذُكر الاسم
@@ -200,6 +204,39 @@ class SmaileBot(BaseBot):
             print(f"[{BOT_NAME}]: {reply}")
         except Exception as e:
             print(f"❌ خطأ نهائي Gemini: {e}")
+
+    async def _copy_outfit(self, user: User, msg: str) -> None:
+        """ينسخ لبس شخص — إما اللي يكلمه أو اسم يوزر ذكره."""
+        from highrise.models import GetUserOutfitRequest
+        target_user = user  # افتراضي: اللي يكلم
+
+        # لو ذكر يوزر ثاني: "انسخ لبس username"
+        if "انسخ لبس" in msg:
+            parts = msg.split("انسخ لبس")
+            name_hint = parts[-1].strip() if len(parts) > 1 else ""
+            # لو ما ذكر اسم أو ذكر "لبسي" فالهدف هو المرسل نفسه
+            if name_hint and name_hint not in ["لبسي", ""]:
+                # نبحث عنه في الروم
+                try:
+                    room_users, _ = await self.highrise.get_room_users()
+                    for u, _ in room_users.content:
+                        if name_hint.lower() in u.username.lower():
+                            target_user = u
+                            break
+                except Exception as e:
+                    print(f"خطأ جلب المستخدمين: {e}")
+
+        try:
+            resp = await self.highrise.get_user_outfit(target_user.id)
+            if hasattr(resp, "outfit") and resp.outfit:
+                await self.highrise.set_outfit(resp.outfit)
+                await self.highrise.chat(f"نسخت لبس {target_user.username} 😏")
+                print(f"✅ نسخ لبس {target_user.username}")
+            else:
+                await self.highrise.chat("ما قدرت أشوف اللبس 🙄")
+        except Exception as e:
+            print(f"❌ خطأ نسخ اللبس: {e}")
+            await self.highrise.chat("صارت مشكلة بنسخ اللبس 😒")
 
     async def _start_following(self, user: User) -> None:
         self.follow_target = user.id

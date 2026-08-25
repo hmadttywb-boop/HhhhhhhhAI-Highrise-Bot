@@ -40,7 +40,8 @@ SYSTEM_PROMPT = f"""أنت شخص اسمك {BOT_NAME} في لعبة Highrise.
 
 كيف تتكلم:
 - عربي عامي واضح ومفهوم تماماً.
-- جملة أو جملتين بالأكثر.
+- جاوب براحتك حسب السؤال: ممكن جملة قصيرة أو عدة جمل إذا كان الموضوع يحتاج شرحاً.
+- لا تختصر الإجابة لدرجة تصبح ناقصة، ولا ترسل رداً فارغاً أبداً.
 - إذا السؤال حقيقي (معلومة، رأي، سؤال) اجب صح وبذكاء، وأضف نكتة خفيفة إذا ناسبت.
 - إذا مدحوك قل شيء واثق بدون مبالغة.
 - إذا انتقدوك رد بهدوء وثقة.
@@ -130,8 +131,8 @@ async def call_ai(messages: list, retries: int = 3) -> str:
     payload = {
         "model": await get_groq_model(),
         "messages": messages,
-        "max_tokens": 400,
-        "temperature": 0.6,
+        "max_tokens": 700,
+        "temperature": 0.65,
     }
     if payload["model"].startswith("openai/"):
         payload["reasoning_effort"] = "low"

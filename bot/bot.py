@@ -8,6 +8,7 @@ from highrise.__main__ import BotDefinition, main as hr_main
 from highrise.models import User, Position
 
 POS_FILE = os.path.join(os.path.dirname(__file__), "last_position.json")
+ADMIN_FILE = os.path.join(os.path.dirname(__file__), "admins.json")
 
 def save_position(pos):
     try:
@@ -23,6 +24,20 @@ def load_position():
             return Position(d["x"], d["y"], d["z"])
     except Exception:
         return None
+
+def load_admins():
+    try:
+        with open(ADMIN_FILE) as f:
+            return {name.casefold() for name in json.load(f)}
+    except Exception:
+        return {OWNER.casefold()}
+
+def save_admins(admins):
+    try:
+        with open(ADMIN_FILE, "w") as f:
+            json.dump(sorted(admins), f)
+    except Exception as e:
+        print(f"خطأ حفظ الأدمن: {e}")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -180,6 +195,8 @@ class SmaileBot(BaseBot):
         self.chase_mode: bool = False
         self.user_positions: dict[str, object] = {}
         self.my_id: str | None = None
+        self.admins = load_admins()
+        self.admins.add(OWNER.casefold())
 
     async def on_start(self, session_metadata) -> None:
         try:
@@ -210,10 +227,19 @@ class SmaileBot(BaseBot):
         print(f"[{user.username}]: {message}")
         msg = message.strip()
         is_owner = user.username.lower() == OWNER.lower()
+        is_admin = user.username.casefold() in self.admins
 
         if BOT_NAME in msg:
-            # ── أوامر محصورة بـ ief_ فقط ──────────────────────────────
-            if is_owner:
+            # إدارة الأدمن: هذه الأوامر للمالك فقط
+            if is_owner and "ضيف ادمن" in msg:
+                await self._change_admin(msg, add=True)
+                return
+            if is_owner and "شيل ادمن" in msg:
+                await self._change_admin(msg, add=False)
+                return
+
+            # أوامر الحركة واللبس للأدمن فقط
+            if is_admin:
                 # توقف / اثبت
                 if any(w in msg for w in ["وقف", "اثبت", "توقف", "استنى", "خليك مكانك"]):
                     await self._stop_following()
@@ -232,7 +258,8 @@ class SmaileBot(BaseBot):
                 # اتبع [يوزر]
                 if "اتبع " in msg:
                     target = await self._find_user_in_msg(msg, "اتبع ")
-                    await self._start_following(target or user, chase=False)
+                    if target:
+                        await self._start_following(target, chase=False)
                     return
 
                 # طاردني
@@ -243,7 +270,8 @@ class SmaileBot(BaseBot):
                 # طارد [يوزر]
                 if "طارد " in msg:
                     target = await self._find_user_in_msg(msg, "طارد ")
-                    await self._start_following(target or user, chase=True)
+                    if target:
+                        await self._start_following(target, chase=True)
                     return
 
                 # انسخ لبسي / انسخ لبس [يوزر]
@@ -312,24 +340,19 @@ class SmaileBot(BaseBot):
 
     async def _copy_outfit(self, user: User, msg: str) -> None:
         """ينسخ لبس شخص — إما اللي يكلمه أو اسم يوزر ذكره."""
-        from highrise.models import GetUserOutfitRequest
-        target_user = user  # افتراضي: اللي يكلم
+        target_user = user
 
+        # "انسخ لبسي" يعني نسخ لبس الشخص الذي أرسل الأمر
+        if "انسخ لبسي" in msg:
+            target_user = user
         # لو ذكر يوزر ثاني: "انسخ لبس username"
-        if "انسخ لبس" in msg:
+        elif "انسخ لبس " in msg:
             parts = msg.split("انسخ لبس")
             name_hint = parts[-1].strip() if len(parts) > 1 else ""
-            # لو ما ذكر اسم أو ذكر "لبسي" فالهدف هو المرسل نفسه
-            if name_hint and name_hint not in ["لبسي", ""]:
-                # نبحث عنه في الروم
-                try:
-                    room_users, _ = await self.highrise.get_room_users()
-                    for u, _ in room_users.content:
-                        if name_hint.lower() in u.username.lower():
-                            target_user = u
-                            break
-                except Exception as e:
-                    print(f"خطأ جلب المستخدمين: {e}")
+            target_user = await self._find_user_in_msg(msg, "انسخ لبس ")
+            if not target_user:
+                await self.highrise.chat(f"ما لقيت اليوزر {name_hint} في الروم 🙄")
+                return
 
         try:
             resp = await self.highrise.get_user_outfit(target_user.id)
@@ -359,6 +382,34 @@ class SmaileBot(BaseBot):
         except Exception as e:
             print(f"خطأ جلب المستخدمين: {e}")
         return None
+
+    async def _change_admin(self, msg: str, add: bool) -> None:
+        keyword = "ضيف ادمن" if add else "شيل ادمن"
+        name_hint = msg.split(keyword, 1)[-1].strip()
+        if not name_hint:
+            await self.highrise.chat("اكتب اسم اليوزر بعد الأمر.")
+            return
+
+        if name_hint.casefold() == OWNER.casefold():
+            await self.highrise.chat("أنت المالك وما تحتاج تضيف نفسك.")
+            return
+
+        target = await self._find_user_in_msg(msg, keyword + " ")
+        username = target.username if target else name_hint
+        key = username.casefold()
+
+        if add:
+            self.admins.add(key)
+            save_admins(self.admins)
+            await self.highrise.chat(f"تمت إضافة {username} كأدمن ✅")
+        else:
+            if key in self.admins:
+                self.admins.remove(key)
+                self.admins.add(OWNER.casefold())
+                save_admins(self.admins)
+                await self.highrise.chat(f"تم حذف {username} من الأدمن ✅")
+            else:
+                await self.highrise.chat(f"{username} ليس أدمن أصلاً.")
 
     async def _come_to(self, user: User) -> None:
         """يمشي مرة واحدة عند الأونر."""

@@ -130,9 +130,11 @@ async def call_ai(messages: list, retries: int = 3) -> str:
     payload = {
         "model": await get_groq_model(),
         "messages": messages,
-        "max_tokens": 150,
+        "max_tokens": 400,
         "temperature": 0.6,
     }
+    if payload["model"].startswith("openai/"):
+        payload["reasoning_effort"] = "low"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json",
@@ -150,7 +152,17 @@ async def call_ai(messages: list, retries: int = 3) -> str:
                         text = await resp.text()
                         raise Exception(f"HTTP {resp.status}: {text[:300]}")
                     data = await resp.json()
-                    return data["choices"][0]["message"]["content"].strip()
+                    message = data["choices"][0]["message"]
+                    content = message.get("content") or message.get("reasoning") or ""
+                    if isinstance(content, list):
+                        content = "".join(
+                            part.get("text", "") if isinstance(part, dict) else str(part)
+                            for part in content
+                        )
+                    content = content.strip()
+                    if not content:
+                        raise Exception("Groq رجّع إجابة فارغة")
+                    return content
         except Exception as e:
             if attempt == retries - 1:
                 raise

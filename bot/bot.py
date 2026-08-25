@@ -26,6 +26,8 @@ def load_position():
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
+GROQ_MODEL = None
 
 BOT_NAME = os.environ.get("BOT_NAME", "سمايل")
 
@@ -80,10 +82,53 @@ COME_MSGS = [
 ]
 
 
+async def get_groq_model() -> str:
+    """يختار موديلًا متاحًا فعلياً لمفتاح Groq الحالي مرة واحدة فقط."""
+    global GROQ_MODEL
+    if GROQ_MODEL:
+        return GROQ_MODEL
+
+    preferred = [
+        "llama-4-scout-17b-16e-instruct",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3-32b",
+    ]
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            GROQ_MODELS_URL,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise Exception(f"موديلات Groq HTTP {resp.status}: {text[:200]}")
+            data = await resp.json()
+
+    available = {item.get("id") for item in data.get("data", [])}
+    for model in preferred:
+        if model in available:
+            GROQ_MODEL = model
+            break
+    else:
+        candidates = sorted(
+            model for model in available
+            if any(word in model.lower() for word in ["instruct", "versatile", "chat"])
+        )
+        if not candidates:
+            raise Exception("لا يوجد موديل محادثة متاح لهذا المفتاح")
+        GROQ_MODEL = candidates[0]
+
+    print(f"🤖 موديل Groq المختار: {GROQ_MODEL}")
+    return GROQ_MODEL
+
+
 async def call_ai(messages: list, retries: int = 3) -> str:
     """يستدعي Groq مع إعادة المحاولة تلقائياً."""
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": await get_groq_model(),
         "messages": messages,
         "max_tokens": 150,
         "temperature": 0.6,

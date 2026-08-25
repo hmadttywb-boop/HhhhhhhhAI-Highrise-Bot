@@ -83,7 +83,7 @@ COME_MSGS = [
 async def call_ai(messages: list, retries: int = 3) -> str:
     """يستدعي Groq مع إعادة المحاولة تلقائياً."""
     payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": "llama-3.3-70b-versatile",
         "messages": messages,
         "max_tokens": 150,
         "temperature": 0.6,

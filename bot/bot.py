@@ -129,6 +129,7 @@ class SmaileBot(BaseBot):
         except Exception:
             self.my_id = None
         print(f"✅ البوت [{BOT_NAME}] دخل الروم! (ID: {self.my_id})")
+        print(f"🤖 Groq API: {'مفعّل' if GROQ_API_KEY else 'غير مفعّل'}")
         # امشي لآخر موقع محفوظ
         last_pos = load_position()
         if last_pos:
@@ -245,7 +246,11 @@ class SmaileBot(BaseBot):
             await self.highrise.chat(reply)
             print(f"[{BOT_NAME}]: {reply}")
         except Exception as e:
-            print(f"❌ خطأ نهائي Gemini: {e}")
+            print(f"❌ خطأ Groq النهائي: {e}")
+            try:
+                await self.highrise.chat("الذكاء الاصطناعي غير متصل حالياً، راجع سجل Railway 😕")
+            except Exception as chat_error:
+                print(f"❌ تعذر إرسال رسالة الخطأ: {chat_error}")
 
     async def _copy_outfit(self, user: User, msg: str) -> None:
         """ينسخ لبس شخص — إما اللي يكلمه أو اسم يوزر ذكره."""
